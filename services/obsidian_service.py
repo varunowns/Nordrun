@@ -7,12 +7,15 @@ per the constitution rule "Obsidian is source of truth."
 Provides vault read/write, frontmatter parsing, and vault scanning.
 """
 
+import logging
 import re
 from pathlib import Path
 
 from config import VAULT_PATH
 from core.plugin_registry import require
 from storage.db import NoteIndex, get_db
+
+log = logging.getLogger(__name__)
 
 # Lazy-init index so we don't force SQLite setup at import time.
 _index: NoteIndex | None = None
@@ -54,6 +57,7 @@ def read_note(relative_path: str) -> str:
     note_path = _resolve_vault_path(relative_path)
     if not note_path.exists():
         raise FileNotFoundError(f"No note found at {note_path}")
+    log.debug("Reading note: %s", relative_path)
     return note_path.read_text(encoding="utf-8")
 
 
@@ -73,6 +77,7 @@ def write_note(
     note_path = _resolve_vault_path(relative_path)
     note_path.parent.mkdir(parents=True, exist_ok=True)
     note_path.write_text(content, encoding="utf-8")
+    log.debug("Wrote note: %s (source=%s)", relative_path, plugin_source)
 
     # Index metadata
     _get_index().index_note(

@@ -15,8 +15,16 @@ nordrun/
 │   ├── llm_service.py         # Anthropic API wrapper (enforces llm:call)
 │   ├── embedding_service.py   # TF-IDF vectorizer + cosine similarity search
 │   └── context_service.py     # Unified plugin-facing API (aggregates all services)
+├── services/
+│   └── memory/                # Phase 1 memory abstraction package
+│       ├── models.py          # Memory, MemoryType, MemoryMetadata, MemoryQuery, ...
+│       ├── base.py            # AbstractMemoryStore, AbstractEmbeddingProvider
+│       └── embedding.py       # TfIdfEmbeddingProvider (wraps the TF-IDF vectorizer)
+│   └── memory_service.py      # MemoryService: unified memory + graph API (get_memory())
 ├── storage/
-│   └── db.py                  # SQLite metadata index (notes table)
+│   ├── db.py                  # SQLite metadata index (notes + Phase 1 memory schema)
+│   ├── memory_store.py        # SqliteMemoryStore (implements AbstractMemoryStore)
+│   └── graph.py               # GraphStore: entities + relationships (knowledge graph)
 ├── automation/
 │   └── scheduler.py           # Background job loop with YAML schedule config
 └── plugins/
@@ -25,7 +33,8 @@ nordrun/
     ├── resume/                # resume.review
     ├── search/                # note.search, note.reindex
     ├── ctx2img/               # note.toimage
-    └── learning/              # learning.digest
+    ├── learning/              # learning.digest
+    └── memory/                # memory.store, memory.search, memory.entity.add, ...
 ```
 
 ## Key relationships
@@ -68,6 +77,81 @@ nordrun/
 | `note.reindex` | CLI | search | (none) |
 | `note.toimage` | CLI | ctx2img | source_note, style |
 | `learning.digest` | CLI | learning | tag, output_note |
+| `memory.store` | CLI, plugins | memory | content, memory_type, importance, tags |
+| `memory.observe` | plugins | memory | content, source, importance |
+| `memory.search` | CLI, plugins | memory | text, memory_type, tags, top_k |
+| `memory.get` | CLI, plugins | memory | memory_id |
+| `memory.update` | plugins | memory | memory_id, content, metadata |
+| `memory.forget` | plugins | memory | memory_id |
+| `memory.entity.add` | plugins | memory | name, entity_type, description |
+| `memory.entity.search` | plugins | memory | name, entity_type, limit |
+| `memory.entity.get` | plugins | memory | entity_id |
+| `memory.relationship.add` | plugins | memory | source_id, target_id, relation_type |
+| `memory.neighbours` | plugins | memory | entity_id, relation_type, max_depth |
+
+## Memory & Knowledge (Phase 1)
+
+Nordrun has persistent, semantic, structured personal memory exposed through
+a `MemoryService` abstraction. The rest of the system depends on the memory
+*interfaces*, never on a concrete vector DB or embedding model, so the
+implementation can be swapped without rewriting callers.
+
+```
+Nordrun
+  → MemoryService            (services/memory_service.py — get_memory() singleton)
+      → AbstractMemoryStore  (services/memory/base.py)
+          → SqliteMemoryStore (storage/memory_store.py)
+      → AbstractEmbeddingProvider (services/memory/base.py)
+          → TfIdfEmbeddingProvider (services/memory/embedding.py)
+      → GraphStore           (storage/graph.py — entities + relationships)
+```
+
+**Data models** (`services/memory/models.py`): `Memory`, `MemoryType`
+(fact, preference, person, project, goal, decision, experience, skill,
+note), `MemorySource` (user, plugin, inferred, vault), `MemoryMetadata`
+(type, source, importance, confidence, tags, provenance, related entities),
+`MemoryQuery`, `MemoryResult`.
+
+**Semantic memory**: The `TfIdfEmbeddingProvider` reuses the Phase 0 TF-IDF
+vectorizer but stores memory vectors in dedicated tables
+(`memory_embeddings`, `memory_embedding_config`, `memory_doc_tokens`) so
+they never collide with note embeddings. Vectors are rebuilt to the current
+vocabulary on `save()` so early-indexed memories are never lost to
+vocabulary growth. The embedding provider is abstracted: a future
+sentence-transformers or API-based provider is a config change, not a
+rewrite.
+
+**Long-term structured memory**: `SqliteMemoryStore` persists memories in
+the `memories` table with full metadata as filterable columns. Queries
+support semantic ranking + structured filters (type, source, tags,
+min_importance) + top_k + similarity threshold.
+
+**Knowledge graph**: `GraphStore` stores `entities` (person, project,
+repository, skill, goal, decision, organization, tool) and directed
+`relationships` (works_on, owns, contributes_to, knows, uses, depends_on,
+demonstrates, decided_by, related_to). Upserts are idempotent on natural
+keys. `get_neighbours()` does BFS traversal up to a configurable depth.
+The graph is reached through `MemoryService`, never as an isolated subsystem.
+
+**Memory lifecycle**: `MemoryService.observe()` is the controlled entry
+point that decides whether content becomes a memory (Phase 1 rule: reject
+empty / <10-char content, store otherwise). Memory is never an
+uncontrolled transcript dump — creation goes through explicit rules.
+LLM-based extraction and consolidation are deferred to Phase 2, but the
+`observe → store` seam is in place.
+
+**Context integration**: `ContextService.get_memory_context(query)` retrieves
+relevant memories + graph entities to enrich LLM prompts. It fails soft —
+if memory is unavailable it returns empty lists rather than breaking normal
+plugin behaviour. The LLM service is never coupled to a concrete memory DB.
+
+**Permissions**: Two new permissions — `memory:read` and `memory:write` —
+are enforced via `@require()` on every `MemoryService` method. An LLM or
+plugin cannot bypass the permission layer to touch memory.
+
+**Storage location**: All memory tables share the same
+`VAULT_PATH/.nordrun/metadata.db` as the note index, created lazily on
+first use via `storage.db._init_memory_schema()`.
 
 ## Scheduler (Hermes)
 
@@ -96,7 +180,7 @@ manifest declares the plugin's contract, enforced at load time by
 | `version` | yes | semver `x.y.z` |
 | `description` | yes | non-empty string |
 | `subscribes` / `publishes` | no | list of non-empty event names |
-| `permissions` | no | string or list of known permissions (`vault:read`, `vault:write`, `llm:call`) |
+| `permissions` | no | string or list of known permissions (`vault:read`, `vault:write`, `llm:call`, `network:call`, `memory:read`, `memory:write`) |
 | `commands` | no | `cmd:event[:help]` entries (semicolon- or list-separated) |
 | `config` | no | free-form plugin config |
 
@@ -121,6 +205,18 @@ Both accept a custom directory for testing.
 - **Semantic search before CLI polish**: Real content from multiple plugins
   needed a search layer before quality-of-life CLI improvements.
   See ADR-004.
+
+## Deferred to Phase 2 (memory system)
+
+- LLM-based memory extraction (Phase 1 uses a simple length/quality rule in
+  `observe()`)
+- Memory consolidation / forgetting policies (`MEMORY_MAX_RECORDS` config
+  exists but no automatic consolidation runs yet)
+- A real semantic embedding model (Phase 1 ships the abstracted TF-IDF
+  provider; sentence-transformers / API providers slot in behind
+  `AbstractEmbeddingProvider`)
+- Deeper graph reasoning (Phase 1 has entity/relationship CRUD + BFS
+  traversal; no inference or path-ranking yet)
 
 ## Not yet built
 

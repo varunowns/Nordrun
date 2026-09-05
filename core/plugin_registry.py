@@ -10,19 +10,28 @@ Permission naming convention:
   vault:read   — read a note from the vault
   vault:write  — write a note to the vault
   llm:call     — call the LLM service
+  network:call — make outbound network requests (HTTP, GitHub API, etc.)
+
+Thread safety:
+  _active_plugin is stored in a threading.local() so concurrent event
+  dispatches on different threads never clobber each other's active plugin
+  context. The registry dict itself is write-once at load time (only
+  register_plugin mutates it, only from the main thread during startup),
+  so reads during dispatch are safe without a lock.
 """
 
 from __future__ import annotations
 
 import inspect
-import sys
+import threading
 from typing import Any
 
-# Global registry: plugin_name -> set of permission strings
+# Global registry: plugin_name -> set of permission strings.
+# Written only during startup (load_and_register), read during dispatch.
 _registry: dict[str, set[str]] = {}
 
-# Track which plugin is currently being handled (set by the event bus)
-_active_plugin: str | None = None
+# Per-thread active plugin name so concurrent dispatches don't interfere.
+_local = threading.local()
 
 
 def register_plugin(name: str, permissions: list[str]) -> None:
@@ -50,10 +59,8 @@ def require(*permissions: str) -> None:
         )
 
     def decorator(func: Any) -> Any:
-        sig = inspect.signature(func)
-
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            plugin = _active_plugin
+            plugin = _local.__dict__.get("active_plugin")
             if plugin is None:
                 raise RuntimeError(
                     f"Service function '{func.__name__}' called outside a plugin handler. "
@@ -74,9 +81,17 @@ def require(*permissions: str) -> None:
 
 
 def set_active_plugin(name: str | None) -> None:
-    """Called by the event bus before/after dispatching to a plugin's handler."""
-    global _active_plugin
-    _active_plugin = name
+    """Called by the event bus before/after dispatching to a plugin's handler.
+
+    Stored in threading.local() so concurrent dispatches on different
+    threads each track their own active plugin without interference.
+    """
+    _local.active_plugin = name
+
+
+def get_active_plugin() -> str | None:
+    """Return the plugin currently being dispatched on this thread."""
+    return _local.__dict__.get("active_plugin")
 
 
 def get_registered_plugins() -> dict[str, set[str]]:

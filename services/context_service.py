@@ -11,17 +11,26 @@ This is the single point of access for:
 - Note indexing
 
 Plugins should use this instead of calling services directly.
+
+Thread safety (Phase 0 hardening):
+  get_context() uses a module-level lock so concurrent callers on
+  different threads always get the same singleton instance and never
+  race on the None check.
 """
 
+import logging
+import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
-import sqlite3
-
 from config import VAULT_PATH
+from core.plugin_registry import require
 from services import obsidian_service
 from services.embedding_service import EmbeddingIndex
 from storage.db import NoteIndex, get_db, _row_to_note
+
+log = logging.getLogger(__name__)
 
 
 class ContextService:
@@ -269,14 +278,62 @@ class ContextService:
             )
         return [_row_to_note(r) for r in cursor.fetchall()]
 
+    # -------------------------------------------------------------------------
+    # Memory context enrichment (Phase 1)
+    # -------------------------------------------------------------------------
 
-# Singleton instance for easy import
+    @require("memory:read")
+    def get_memory_context(
+        self,
+        query: str,
+        top_k: int | None = None,
+        min_importance: float | None = None,
+    ) -> dict:
+        """Retrieve relevant memories and knowledge-graph entities for a query.
+
+        Returns a dict with keys:
+          'memories'  — list of memory dicts (id, content, type, importance, …)
+          'entities'  — list of entity dicts (id, name, entity_type, …)
+
+        This is the integration point between the existing ContextService
+        (vault notes + embeddings) and the new MemoryService (structured
+        long-term memory + knowledge graph).
+
+        The result can be formatted into an LLM system prompt so the model
+        is aware of relevant personal context before responding.
+
+        Failure handling: if the MemoryService is unavailable or the
+        memory DB has not been initialised, returns empty lists rather
+        than propagating an exception — normal plugin behaviour must not
+        break because memory is missing.
+        """
+        try:
+            from services.memory_service import get_memory
+            svc = get_memory(conn=self._conn)
+            return svc.get_relevant_context(query=query, top_k=top_k, min_importance=min_importance)
+        except Exception as exc:
+            log.warning("get_memory_context() failed (query=%r): %s", query, exc)
+            return {"memories": [], "entities": []}
+
+
+# Singleton instance for easy import.
+# _context_lock guards the double-checked initialisation so concurrent
+# callers on different threads never race on the None check.
 _context_service: ContextService | None = None
+_context_lock = threading.Lock()
 
 
 def get_context() -> ContextService:
-    """Get the global ContextService instance."""
+    """Return the global ContextService singleton.
+
+    Thread-safe: uses a double-checked lock so the cost of acquiring the
+    lock is only paid once (subsequent calls read _context_service without
+    locking after the first initialisation).
+    """
     global _context_service
     if _context_service is None:
-        _context_service = ContextService()
+        with _context_lock:
+            if _context_service is None:
+                _context_service = ContextService()
+                log.debug("ContextService singleton initialised")
     return _context_service

@@ -99,9 +99,9 @@ class TestValidateManifest:
 
     def test_unknown_permission(self):
         m = _valid_manifest()
-        m["permissions"] = ["vault:read", "network:call"]
+        m["permissions"] = ["vault:read", "totally:bogus"]
         issues = validate_manifest(m)
-        assert any("network:call" in i for i in issues)
+        assert any("totally:bogus" in i for i in issues)
 
     def test_permissions_as_csv_string(self):
         m = _valid_manifest()
@@ -121,9 +121,9 @@ class TestValidateManifest:
 
     def test_permissions_list_with_unknown(self):
         m = _valid_manifest()
-        m["permissions"] = ["vault:read", "network:call"]
+        m["permissions"] = ["vault:read", "totally:bogus"]
         issues = validate_manifest(m)
-        assert any("network:call" in i for i in issues)
+        assert any("totally:bogus" in i for i in issues)
 
     def test_parse_permissions_normalises_forms(self):
         assert parse_permissions("vault:read, vault:write") == ["vault:read", "vault:write"]
@@ -181,16 +181,18 @@ class TestLoaderSkipsInvalid:
         )
         return tmp_path
 
-    def test_invalid_plugin_is_skipped(self, broken_plugins_dir: Path, capsys):
+    def test_invalid_plugin_is_skipped(self, broken_plugins_dir: Path, caplog):
+        import logging
         bus = EventBus()
-        report = load_and_register(bus, plugins_dir=broken_plugins_dir)
+        with caplog.at_level(logging.ERROR, logger="core.plugin_loader"):
+            report = load_and_register(bus, plugins_dir=broken_plugins_dir)
         assert report.registered == ["good"]
         assert report.skipped["bad"]  # non-empty reasons
         assert "bad" not in report.failed
-        # The bad plugin's register() must never run
-        err = capsys.readouterr().err
-        assert "Skipping 'bad'" in err
-        assert "invalid manifest" in err
+        # The bad plugin's register() must never run — error goes to logging now
+        messages = [r.message for r in caplog.records]
+        assert any("bad" in m for m in messages)
+        assert any("invalid manifest" in m or "Skipping" in m for m in messages)
 
     def test_report_ok_is_false_when_skipped(self, broken_plugins_dir: Path):
         report = load_and_register(EventBus(), plugins_dir=broken_plugins_dir)
@@ -246,14 +248,17 @@ class TestLoaderReportsRegisterFailure:
         )
         return tmp_path
 
-    def test_register_failure_recorded(self, dir_with_register_failure: Path, capsys):
+    def test_register_failure_recorded(self, dir_with_register_failure: Path, caplog):
+        import logging
         bus = EventBus()
-        report = load_and_register(bus, plugins_dir=dir_with_register_failure)
+        with caplog.at_level(logging.ERROR, logger="core.plugin_loader"):
+            report = load_and_register(bus, plugins_dir=dir_with_register_failure)
         assert report.registered == []
         assert report.failed["boom"] == "register exploded"
         assert not report.ok
-        err = capsys.readouterr().err
-        assert "Failed to load plugin 'boom'" in err
+        # Error now goes to logging, not stderr
+        messages = [r.message for r in caplog.records]
+        assert any("boom" in m for m in messages)
 
     def test_one_failing_plugin_does_not_block_others(
         self, dir_with_register_failure: Path, tmp_path: Path

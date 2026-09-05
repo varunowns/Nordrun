@@ -1,30 +1,55 @@
 """
-Nordrun entrypoint (vertical slice)
------------------------------------
+Nordrun entrypoint
+------------------
 Wires up the event bus via auto-discovery, and auto-generates CLI
 subcommands from each plugin's CLI_COMMANDS metadata — no more
 hardcoding commands in main.py.
 
+Logging is configured here (once, at process startup) so every module
+that calls logging.getLogger(__name__) automatically inherits the root
+handler and level. Set NORDRUN_LOG_LEVEL in your .env to adjust verbosity:
+  DEBUG    — trace every event dispatch, vault read/write, DB query
+  INFO     — scheduled job starts/completions, plugin load summary
+  WARNING  — transient LLM errors being retried (default)
+  ERROR    — plugin failures, unretryable errors (always shown)
+
+.env is loaded exclusively by config.py — main.py no longer double-loads
+it so there is a single authoritative load point.
+
 Usage:
     python main.py --help
     python main.py summarize "Career/README.md"
-    python main.py commits "varunowns/EchoSign"
+    python main.py commits "v4run/EchoSign"
 """
 
 import argparse
+import logging
 import os
 import sys
-
-# Load .env early so validate_config() sees the variables
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
 
 from core.event_bus import EventBus
 from core.plugin_loader import PluginLoadReport, discover_plugins, load_and_register, validate_manifest
 from core.plugin_registry import get_registered_plugins
+
+# ---------------------------------------------------------------------------
+# Logging setup — called once before any other nordrun module does work.
+# ---------------------------------------------------------------------------
+
+def _configure_logging() -> None:
+    """Configure the root logger from NORDRUN_LOG_LEVEL (default: WARNING).
+
+    WARNING is the production default: LLM retry warnings and plugin errors
+    surface; debug/info chatter stays quiet. Set DEBUG to trace everything.
+    """
+    level_name = os.environ.get("NORDRUN_LOG_LEVEL", "WARNING").upper()
+    level = getattr(logging, level_name, logging.WARNING)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+_configure_logging()
 
 
 def validate_config() -> list[str]:
@@ -56,20 +81,22 @@ def validate_config() -> list[str]:
 
 _load_report: "PluginLoadReport | None" = None
 
+_log = logging.getLogger(__name__)
+
 
 def build_event_bus() -> EventBus:
     """Build the event bus and register all valid plugins.
 
     The load result is stashed globally so list-plugins can annotate
-    skipped/failed plugins. A summary is always printed; details go to
-    stderr (from the loader) so the CLI output stays clean.
+    skipped/failed plugins. Summary is printed to stdout; plugin-level
+    detail comes from the logging system.
     """
     global _load_report
     bus = EventBus()
     _load_report = load_and_register(bus)
     print(f"Plugins: {_load_report.summary()}.")
     if not _load_report.registered:
-        print("Warning: no plugins were loaded.", file=sys.stderr)
+        _log.warning("No plugins were loaded.")
     return bus
 
 

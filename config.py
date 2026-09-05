@@ -34,3 +34,28 @@ LLM_API_KEY = os.environ.get("NORDRUN_LLM_API_KEY", "")
 
 # Which model to call for plugin LLM tasks
 LLM_MODEL = os.environ.get("NORDRUN_LLM_MODEL", "claude-sonnet-4-6")
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Memory & Knowledge configuration
+# ---------------------------------------------------------------------------
+
+# Embedding provider for memory: "tfidf" (default, no extra deps) or
+# a future provider key like "sentence-transformers".
+MEMORY_EMBEDDING_PROVIDER = os.environ.get("NORDRUN_MEMORY_EMBEDDING_PROVIDER", "tfidf")
+
+# Cosine similarity threshold for memory retrieval [0.0, 1.0].
+# Memories with score below this are excluded from semantic results.
+MEMORY_SIMILARITY_THRESHOLD = float(os.environ.get("NORDRUN_MEMORY_SIMILARITY_THRESHOLD", "0.0"))
+
+# Default number of memories returned by a semantic search.
+MEMORY_TOP_K = int(os.environ.get("NORDRUN_MEMORY_TOP_K", "10"))
+
+# Maximum total memories stored before oldest low-importance memories
+# are candidates for consolidation.  0 = no limit (Phase 1 default).
+MEMORY_MAX_RECORDS = int(os.environ.get("NORDRUN_MEMORY_MAX_RECORDS", "0"))
+
+# Minimum importance threshold for a memory to be injected into LLM context.
+MEMORY_CONTEXT_MIN_IMPORTANCE = float(os.environ.get("NORDRUN_MEMORY_CONTEXT_MIN_IMPORTANCE", "0.3"))
+
+# Maximum number of memories to inject into a single LLM context window.
+MEMORY_CONTEXT_MAX_INJECT = int(os.environ.get("NORDRUN_MEMORY_CONTEXT_MAX_INJECT", "5"))

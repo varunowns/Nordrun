@@ -30,7 +30,12 @@ from services import context_service, embedding_service, obsidian_service
 from services.embedding_service import EmbeddingIndex
 from storage.db import NoteIndex, _init_schema
 
-_TEST_PLUGIN_PERMISSIONS = ["vault:read", "vault:write", "llm:call"]
+_TEST_PLUGIN_PERMISSIONS = [
+    "vault:read", "vault:write", "llm:call",
+    # Phase 1: memory permissions so tests exercising MemoryService /
+    # ContextService.get_memory_context() pass the @require checks.
+    "memory:read", "memory:write",
+]
 
 
 @pytest.fixture
@@ -108,6 +113,11 @@ def isolated_env(monkeypatch, test_vault, test_db) -> None:
     context_service._context_service = None
     obsidian_service._index = None
 
+    # Reset the Phase 1 MemoryService singleton too, so a memory service
+    # built against one test's DB never leaks into the next test.
+    import services.memory_service as memory_service
+    memory_service._memory_service = None
+
     # Redirect vault path (bound at import in each of these modules)
     monkeypatch.setattr(context_service, "VAULT_PATH", test_vault)
     monkeypatch.setattr(obsidian_service, "VAULT_PATH", test_vault)
@@ -133,3 +143,4 @@ def isolated_env(monkeypatch, test_vault, test_db) -> None:
     set_active_plugin("test_plugin")
     yield
     set_active_plugin(None)
+    memory_service._memory_service = None

@@ -25,9 +25,14 @@ def _command_map():
 class TestCommandMap:
 
     def test_all_plugin_commands_present(self):
+        # Phase 1 (Memory & Knowledge) intentionally adds the `memory` plugin,
+        # which exposes three new CLI commands: memory-store, memory-search,
+        # and memory-recall. This assertion was updated to reflect that
+        # deliberate API expansion — no existing command was removed or renamed.
         commands = _command_map()
         assert set(commands) == {"summarize", "commits", "review-resume",
-                                 "search", "toimage", "digest"}
+                                 "search", "toimage", "digest",
+                                 "memory-store", "memory-search", "memory-recall"}
 
     def test_command_map_event_names(self):
         commands = _command_map()

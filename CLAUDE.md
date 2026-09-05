@@ -11,6 +11,43 @@ through small plugins that subscribe to events on a shared event bus.
 See README.md for the current architecture and what's deliberately not
 built yet.
 
+**Phase status:**
+- Phase 0 — Core 1.0: COMPLETE (event bus, plugins, scheduler, permissions,
+  logging, retries, thread safety, test infrastructure).
+- Phase 1 — Memory & Knowledge: COMPLETE (MemoryService abstraction,
+  semantic memory, abstracted embeddings, long-term structured memory,
+  knowledge graph, context integration, memory permissions).
+
+## Memory system (Phase 1 — implemented)
+
+- **`services/memory_service.py`** — `MemoryService` is the single entry
+  point for memory. Get the singleton with `from services.memory_service
+  import get_memory`. It owns a `SqliteMemoryStore`, a `GraphStore`, and a
+  `TfIdfEmbeddingProvider`, all sharing one SQLite connection.
+- **`services/memory/`** — `models.py` (Memory, MemoryType, MemorySource,
+  MemoryMetadata, MemoryQuery, MemoryResult), `base.py`
+  (`AbstractMemoryStore`, `AbstractEmbeddingProvider`), `embedding.py`
+  (`TfIdfEmbeddingProvider`).
+- **`storage/memory_store.py`** — `SqliteMemoryStore` implements
+  `AbstractMemoryStore` against the `memories` table.
+- **`storage/graph.py`** — `GraphStore` holds `entities` + `relationships`
+  (the knowledge graph).
+- **Abstraction rule**: depend on `MemoryService` and the abstract
+  interfaces — never hard-code a concrete vector DB, embedding model, or
+  graph backend into callers. Swapping the embedding provider is a config
+  change (`NORDRUN_MEMORY_EMBEDDING_PROVIDER`), not a rewrite.
+- **Permissions**: memory reads require `memory:read`, writes require
+  `memory:write`, enforced by `@require()`. Do not bypass this layer.
+- **Controlled writes**: memory creation goes through
+  `MemoryService.observe()` / `store()` with explicit rules — never dump
+  raw conversation transcripts as permanent memory.
+- **Context integration**: `ContextService.get_memory_context(query)`
+  retrieves relevant memories + entities and fails soft (returns empty
+  lists) if memory is unavailable — normal plugin behaviour must not break.
+- **Test/run**: `python -m pytest tests/test_memory_*.py
+  tests/test_knowledge_graph.py`. CLI: `memory-store`, `memory-search`,
+  `memory-recall`. Memory tables live in `VAULT_PATH/.nordrun/metadata.db`.
+
 ## Rules (do not break these)
 
 1. **One milestone at a time.** Don't build ahead of what's asked.
@@ -26,8 +63,10 @@ built yet.
 4. **Obsidian is the source of truth.** Plugins read/write notes only
    through `services/obsidian_service.py`, never with raw file I/O.
 5. **No new top-level architecture without being asked.** No event
-   bus rewrites, no DI container, no permissions system, no scheduler
-   — until a prompt explicitly asks for it.
+   bus rewrites, no DI container, no new permissions, no scheduler
+   changes — until a prompt explicitly asks for it. (The permission
+   system, scheduler, and memory system already exist as of Phase 1;
+   extend them, don't reinvent them.)
 6. **Update README.md** when you add a plugin or service, so it stays
    an accurate map of the project.
 7. **Write a quick test** for new plugin logic where practical (a

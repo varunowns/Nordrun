@@ -15,9 +15,15 @@ from core.event_bus import EventBus
 
 @pytest.fixture
 def isolated_schedules(tmp_path, monkeypatch):
-    """Point the scheduler's schedules.yaml at a temp location."""
-    monkeypatch.setattr(scheduler, "_SCHEDULES_PATH", tmp_path / "schedules.yaml")
-    return scheduler._SCHEDULES_PATH
+    """Point the scheduler's VAULT_PATH at a temp location.
+
+    The old code had a module-level _SCHEDULES_PATH; the hardened
+    scheduler resolves the path at call time via _schedules_path()
+    which reads VAULT_PATH. Patching VAULT_PATH on the scheduler module
+    is the correct seam.
+    """
+    monkeypatch.setattr(scheduler, "VAULT_PATH", tmp_path)
+    return tmp_path / ".nordrun" / "schedules.yaml"
 
 
 def test_load_schedules_creates_defaults(isolated_schedules):

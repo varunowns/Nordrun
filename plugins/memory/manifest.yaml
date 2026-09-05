@@ -1,0 +1,35 @@
+name: memory
+version: 0.1.0
+description: >
+  Exposes Nordrun's long-term memory and knowledge graph through the event
+  bus. Handles memory storage, retrieval, update, deletion, entity management,
+  and relationship creation via structured events.
+
+subscribes:
+  - memory.store
+  - memory.search
+  - memory.get
+  - memory.update
+  - memory.forget
+  - memory.observe
+  - memory.entity.add
+  - memory.entity.search
+  - memory.entity.get
+  - memory.relationship.add
+  - memory.neighbours
+
+publishes:
+  - memory.stored
+  - memory.found
+  - memory.forgotten
+
+commands: >
+  memory-store:memory.store:Store a memory;
+  memory-search:memory.search:Search memories;
+  memory-recall:memory.get:Recall a specific memory by ID
+
+permissions: memory:read, memory:write
+
+config:
+  default_importance: 0.5
+  default_top_k: 10

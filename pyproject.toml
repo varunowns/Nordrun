@@ -1,0 +1,34 @@
+[tool.pytest.ini_options]
+# Test discovery
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Filter warnings
+# Numpy on Python 3.14 is experimental and emits several RuntimeWarnings
+# from its internal float limits code. These are noise for our test runs —
+# suppress them so failures are readable. The numpy warning itself is left
+# in place for the first occurrence so it remains visible if you run pytest
+# with -W default.
+filterwarnings = [
+    "ignore::RuntimeWarning:numpy",
+    "ignore:Numpy built with MINGW-W64:Warning",
+]
+
+# Output: show locals in tracebacks, shorter tracebacks for readability
+addopts = "--tb=short"
+
+# Markers (declare here to avoid PytestUnknownMarkWarning when used)
+markers = [
+    "slow: marks tests that make real network or LLM calls (deselect with -m 'not slow')",
+    "integration: marks tests that require a real vault or database on disk",
+]
+
+[tool.coverage.run]
+source = ["core", "services", "storage", "automation", "plugins"]
+omit = ["tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

@@ -16,6 +16,7 @@ the plugin contract a real contract rather than a suggestion.
 
 import importlib
 import importlib.util
+import logging
 import re
 import sys
 from dataclasses import dataclass, field
@@ -29,11 +30,13 @@ from core.plugin_registry import register_plugin
 if TYPE_CHECKING:
     from core.event_bus import EventBus
 
+log = logging.getLogger(__name__)
+
 # Root directory the default plugin set lives under.
 PLUGINS_DIR = Path(__file__).resolve().parent.parent / "plugins"
 
 # Permissions the platform currently understands.
-_KNOWN_PERMISSIONS = {"vault:read", "vault:write", "llm:call"}
+_KNOWN_PERMISSIONS = {"vault:read", "vault:write", "llm:call", "network:call", "memory:read", "memory:write"}
 
 # Commands declared in a manifest look like "name:event:help".
 _COMMAND_ENTRY_SEPARATOR = ";"
@@ -107,9 +110,6 @@ def validate_manifest(meta: dict) -> list[str]:
         if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name):
             issues.append(f"name: '{name}' is not kebab-case")
         else:
-            # The contract requires the manifest name to match its plugin
-            # dir — the loader imports plugin.py from that dir, so a
-            # mismatch would fail opaquely at import time.
             dir_name = Path(str(meta.get("dir", ""))).name
             if dir_name and dir_name != name:
                 issues.append(f"name: '{name}' does not match the plugin dir '{dir_name}'")
@@ -122,12 +122,12 @@ def validate_manifest(meta: dict) -> list[str]:
     if not isinstance(description, str) or not description.strip():
         issues.append("description: missing or empty")
 
-    for field in ("subscribes", "publishes"):
-        value = meta.get(field, [])
+    for field_name in ("subscribes", "publishes"):
+        value = meta.get(field_name, [])
         if not isinstance(value, list):
-            issues.append(f"{field}: expected a list of event names")
+            issues.append(f"{field_name}: expected a list of event names")
         elif not all(isinstance(e, str) and e.strip() for e in value):
-            issues.append(f"{field}: entries must be non-empty strings")
+            issues.append(f"{field_name}: entries must be non-empty strings")
 
     permissions = meta.get("permissions", [])
     if not isinstance(permissions, (str, list)):
@@ -212,28 +212,23 @@ def load_and_register(event_bus: "EventBus", plugins_dir: Path | None = None) ->
         plugin_name = meta["name"]
 
         if "_parse_error" in meta:
-            print(
-                f"[plugin_loader] Skipping '{plugin_name}': manifest failed to parse: {meta['_parse_error']}",
-                file=sys.stderr,
+            log.error(
+                "Skipping '%s': manifest failed to parse: %s",
+                plugin_name, meta["_parse_error"],
             )
             report.skipped[plugin_name] = [f"manifest failed to parse: {meta['_parse_error']}"]
             continue
 
         validation_issues = validate_manifest(meta)
         if validation_issues:
-            print(
-                f"[plugin_loader] Skipping '{plugin_name}': invalid manifest:",
-                file=sys.stderr,
-            )
+            log.error("Skipping '%s': invalid manifest:", plugin_name)
             for issue in validation_issues:
-                print(f"  - {issue}", file=sys.stderr)
+                log.error("  - %s", issue)
             meta["_validation_errors"] = validation_issues
             report.skipped[plugin_name] = validation_issues
             continue
 
         try:
-            # Import the plugin module from the directory that was scanned,
-            # so the plugins_dir seam is honest and testable.
             plugin_module_path = base_dir / plugin_name / "plugin.py"
             spec = importlib.util.spec_from_file_location(
                 f"plugins.{plugin_name}.plugin", plugin_module_path
@@ -247,9 +242,6 @@ def load_and_register(event_bus: "EventBus", plugins_dir: Path | None = None) ->
             if not hasattr(module, "register"):
                 raise AttributeError("plugin.py has no register(event_bus) function")
 
-            # Register permissions from manifest before calling register().
-            # The manifest contract allows string or list form, so normalise
-            # through parse_permissions (never .split directly).
             perm_list = parse_permissions(meta.get("permissions", ""))
             register_plugin(plugin_name, perm_list)
 
@@ -259,8 +251,10 @@ def load_and_register(event_bus: "EventBus", plugins_dir: Path | None = None) ->
                 config=meta.get("config") or {},
             )
             report.registered.append(plugin_name)
+            log.debug("Loaded plugin '%s' (permissions: %s)", plugin_name, perm_list)
+
         except Exception as exc:
-            print(f"[plugin_loader] Failed to load plugin '{plugin_name}': {exc}", file=sys.stderr)
+            log.error("Failed to load plugin '%s': %s", plugin_name, exc)
             report.failed[plugin_name] = str(exc)
 
     return report
